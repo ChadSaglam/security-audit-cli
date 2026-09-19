@@ -63,34 +63,66 @@ def check_file_upload(rep: Report, root: Path) -> None:
 
 
 def check_dependencies(rep: Report, root: Path) -> None:
-    """Pip-audit + bun/npm audit. pip-audit's JSON format is version-dependent;
-    handle both list-of-deps and {'dependencies': [...]} shapes."""
-    if _run_ok(["pip-audit", "--version"]):
-        audit = subprocess.run(["pip-audit", "--format=json"],
-                               capture_output=True, text=True, cwd=root)
-        try:
-            data = json.loads(audit.stdout or "[]")
-            deps = (data.get("dependencies", []) if isinstance(data, dict)
-                    else data)
-            for dep in deps:
-                if not isinstance(dep, dict):
-                    continue
-                for v in dep.get("vulns", []):
-                    if not isinstance(v, dict):
-                        continue
-                    rep.findings.append(_f("compound.dep-python",
-                        "Dependencies", "HIGH", "requirements", 0,
-                        f"{dep['name']} {dep['version']}: {v.get('id')}",
-                        "Upgrade to the patched version cited by pip-audit.",
-                        "production"))
-        except (json.JSONDecodeError, KeyError):
-            pass
-    else:
+    """Scan the TARGET project's Python dependencies.
+
+    Never run bare `pip-audit` from the tool's own environment — that audits
+    the tool's site-packages (jupyterlab, keras, yt-dlp, ...) instead of the
+    project under scan. Instead:
+      1. requirements*.txt present        → pip-audit -r <file>
+      2. project-local .venv present      → pip-audit --python <venv/bin/python>
+      3. otherwise                        → INFO "skipped"
+    pip-audit's JSON shape varies by version: a list of dep dicts, or
+    {"dependencies": [...]} — handle both, skip non-dict entries.
+    """
+    if not _run_ok(["pip-audit", "--version"]):
         rep.findings.append(_f("compound.dep-python-skip",
             "Dependencies", "INFO", "(env)", 0,
             "pip-audit not available; python dependency scan skipped",
             "Install extras: pipx install 'security-audit-cli[deps-audit]'.",
             "tooling"))
+        return
+
+    req_files = [p for p in (root / "requirements.txt",
+                             root / "backend" / "requirements.txt",
+                             root / "requirements-dev.txt")
+                 if p.exists()]
+    venv_py = (root / ".venv" / "bin" / "python")
+    venv = venv_py if venv_py.exists() else (
+        root / "backend" / ".venv" / "bin" / "python")
+
+    if req_files:
+        cmd = ["pip-audit", "-r", str(req_files[0])]
+    elif venv.exists():
+        cmd = ["pip-audit", "--python", str(venv)]
+    else:
+        rep.findings.append(_f("compound.dep-python-nomanifest",
+            "Dependencies", "INFO", "(project-wide)", 0,
+            "No requirements.txt or .venv found — python dependency scan "
+            "skipped (would have audited the wrong environment)",
+            "Add a requirements.txt, or create a .venv with the project "
+            "dependencies.", "tooling"))
+        return
+
+    audit = subprocess.run(cmd, capture_output=True, text=True, cwd=root)
+    try:
+        data = json.loads(audit.stdout or "[]")
+        deps = (data.get("dependencies", []) if isinstance(data, dict)
+                else data)
+        for dep in deps:
+            if not isinstance(dep, dict):
+                continue
+            for v in dep.get("vulns", []):
+                if not isinstance(v, dict):
+                    continue
+                rep.findings.append(_f("compound.dep-python",
+                    "Dependencies", "HIGH",
+                    str(req_files[0].relative_to(root)) if req_files
+                    else ".venv", 0,
+                    f"{dep['name']} {dep['version']}: {v.get('id')}",
+                    "Upgrade to the patched version cited by pip-audit.",
+                    "production"))
+    except (json.JSONDecodeError, KeyError):
+        pass
 
     pkg = root / "package.json"
     if pkg.exists():
