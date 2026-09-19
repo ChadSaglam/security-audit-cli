@@ -1,0 +1,241 @@
+# security-audit default rule set
+# Remediation texts are intentionally actionable; every rule id is stable so
+# it can be referenced in .security-audit-baseline.json.
+
+rules:
+  # --- AuthN/AuthZ -------------------------------------------------------
+  - id: auth.hardcoded-password-compare
+    check: AuthN/AuthZ
+    severity: CRITICAL
+    pattern: "password\\s*==\\s*['\"]"
+    message: Hard-coded password comparison
+    remediation: Compare hashes, not plaintext. Use bcrypt/argon2 (passlib). In tests, use a fixture constant.
+
+  - id: auth.jwt-decode-no-verify
+    check: AuthN/AuthZ
+    severity: HIGH
+    pattern: "jwt\\.decode\\((?!.*verify)"
+    message: jwt.decode() without explicit verification
+    remediation: Always verify — jwt.decode(token, key, algorithms=["RS256"]). Bare decode is only acceptable for logging untrusted claims.
+
+  - id: auth.jwt-alg-none
+    check: AuthN/AuthZ
+    severity: CRITICAL
+    pattern: '"alg"\\s*:\\s*"none"|algorithm.*none'
+    message: JWT 'none' algorithm — signature verification disabled
+    remediation: Reject alg=none at the verifier. Re-check every RS256/HS256 confusion surface.
+
+  - id: auth.middleware-missing
+    check: AuthN/AuthZ
+    severity: MEDIUM
+    inverse: true
+    pattern: "@require|require_auth|is_authenticated|get_current_user|depends.*auth|authorize|middleware.*auth"
+    message: AuthZ middleware/dependency not found
+    remediation: Add an authentication dependency (FastAPI Depends, Express middleware) protecting non-public routes.
+
+  - id: auth.secure-hashing
+    check: AuthN/AuthZ
+    severity: INFO
+    pattern: "bcrypt|argon2|scrypt|password_hash|passlib"
+    message: Secure password hashing in use (good)
+
+  # --- Input validation ---------------------------------------------------
+  - id: input.direct-request-access
+    check: Input Validation
+    severity: MEDIUM
+    pattern: "request\\.(get|post|args|form)\\["
+    message: Direct unvalidated request input access
+    remediation: Pass through a schema (pydantic/zod) before use; reject unknown fields.
+
+  - id: input.schema-lib-missing
+    check: Input Validation
+    severity: HIGH
+    inverse: true
+    pattern: "zod|joi|yup|pydantic|marshmallow|valibot|cerberus"
+    message: Schema-based validation library not found
+    remediation: Validate all external input with a schema library; it buys you injection, type and shape bugs for free.
+
+  - id: input.eval-exec
+    check: Input Validation
+    severity: CRITICAL
+    pattern: "\\beval\\(|[^.]exec\\(|new Function\\("
+    message: eval()/exec()/new Function — code injection risk
+    remediation: Remove dynamic code evaluation entirely; use a parser or data-driven dispatch.
+
+  # --- SQL Injection ------------------------------------------------------
+  - id: sqli.fstring-execute
+    check: SQL Injection
+    severity: CRITICAL
+    pattern: "(execute|query)\\s*\\(\\s*(f['\"]|['\"].*%)"
+    message: SQL built with f-string/format
+    remediation: Use parameterized queries: op.execute(text(...), params). ALTER-identifier DDL in migrations is acceptable — confirm no user input reaches it.
+
+  - id: sqli.raw-orm
+    check: SQL Injection
+    severity: HIGH
+    pattern: "\\.raw\\(|rawQuery|execute_raw"
+    message: ORM raw-query interface used
+    remediation: Verify every parameter is bound, not interpolated.
+
+  - id: sqli.template-literal
+    check: SQL Injection
+    severity: CRITICAL
+    pattern: "`\\s*(SELECT|INSERT|UPDATE|DELETE).*\\$\\{"
+    message: SQL template literal with interpolation
+    remediation: Use driver parameter placeholders ($1, %s, :param) — never ${} inside SQL.
+
+  # --- XSS ----------------------------------------------------------------
+  - id: xss.inner-html
+    check: XSS
+    severity: HIGH
+    pattern: "innerHTML\\s*=|dangerouslySetInnerHTML|{@html"
+    message: Unescaped HTML rendering (innerHTML / {@html} / dangerouslySetInnerHTML)
+    remediation: Sanitize (DOMPurify/bleach). Frameworks escape by default — only inject trusted constant strings (e.g. next-themes bootstrap script).
+
+  # --- CSRF / CORS ----------------------------------------------------------
+  - id: csrf.absent
+    check: CSRF
+    severity: HIGH
+    inverse: true
+    pattern: "csrf|csurf|SameSite|X-CSRF|xsrf"
+    message: CSRF protection (token or SameSite cookie) not found
+    remediation: Cookie sessions: add CSRF middleware or SameSite=Strict cookies. Pure Bearer-token APIs: document the exception.
+
+  - id: cors.wildcard
+    check: CORS
+    severity: HIGH
+    pattern: "Access-Control-Allow-Origin.*\\*|origin\\s*[:=]\\s*['\"]\\*"
+    message: CORS wildcard origin "*"
+    remediation: Replace * with an explicit origin allowlist; never combine * with allow_credentials.
+
+  - id: cors.unconfigured
+    check: CORS
+    severity: LOW
+    inverse: true
+    pattern: "cors|Access-Control-Allow-Origin"
+    message: No CORS configuration found
+    remediation: Configure CORS explicitly with an allowlist of origins.
+
+  # --- HTTPS / cookies ------------------------------------------------------
+  - id: https.plain-http
+    check: HTTPS
+    severity: MEDIUM
+    pattern: "http://(?!localhost|127\\.0\\.0\\.1)"
+    message: Plain HTTP URL in code
+    remediation: Use HTTPS for any non-local endpoint. XML namespaces in standards (e.g. SIX QR) are expected false positives.
+
+  # --- Secrets --------------------------------------------------------------
+  - id: secrets.openai-key
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "(?<![a-zA-Z0-9])sk-[a-zA-Z0-9]{20,}"
+    message: OpenAI API key in plaintext
+    remediation: Rotate the key NOW, then move to env/secrets manager and scrub git history.
+
+  - id: secrets.github-token
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "ghp_[a-zA-Z0-9]{30,}|gho_[a-zA-Z0-9]{20,}"
+    message: GitHub token in plaintext
+    remediation: Revoke at github.com/settings/tokens, move to env/secrets manager, scrub git history.
+
+  - id: secrets.aws-key
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "AKIA[0-9A-Z]{16}"
+    message: AWS access key in plaintext
+    remediation: Deactivate the key in IAM, remove from code and history.
+
+  - id: secrets.private-key
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    message: Private key committed
+    remediation: Treat any committed key as compromised: revoke/rotate, use a secrets manager.
+
+  - id: secrets.generic
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "(?i)(api[_-]?key|secret|password|token)\\s*[:=]\\s*['\"][^'\"]{8,}['\"]"
+    message: Hard-coded secret assignment
+    remediation: Move to environment variables / a secrets manager (direnv, Vault, Doppler). Rotate anything that was ever committed.
+
+  - id: secrets.db-dsn
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "postgres(ql)?://[^\\s'\"]+:[^\\s'\"]+@"
+    message: DB connection string with credentials
+    remediation: Build the DSN from env vars (pydantic-settings Field(env=...)); a default is still a secret.
+
+  # --- Logging ---------------------------------------------------------------
+  - id: logging.sensitive-data
+    check: Logging/Audit
+    severity: HIGH
+    pattern: "(log|print|console\\.log).*\\b(password|secret|token|credit)\\b"
+    message: Sensitive data may be logged
+    remediation: Strip credentials from log statements; log IDs/metadata. Consider a redaction filter for keys named password/token/secret.
+
+  - id: logging.no-logger
+    check: Logging/Audit
+    severity: LOW
+    inverse: true
+    pattern: "logging|logger|winston|pino|audit"
+    message: Logging framework not found
+    remediation: Use structured logging (structlog/pino) with a redaction filter.
+
+  # --- Rate limiting / error handling -------------------------------------------------------
+  - id: rate-limit.absent
+    check: Rate Limiting
+    severity: MEDIUM
+    inverse: true
+    pattern: "rate.?limit|ratelimit|slowapi|throttle|limiter"
+    message: Rate limiting not found
+    remediation: At minimum limit /login and /auth: slowapi (FastAPI), express-rate-limit, or reverse-proxy rules (nginx limit_req).
+
+  - id: exception.global-handler-missing
+    check: Exception Handling
+    severity: MEDIUM
+    inverse: true
+    pattern: "@app\\.errorhandler|app\\.exception_handler|setErrorHandler|onError|errorHandler\\(|app\\.use\\(\\(err"
+    message: Global exception handler not found
+    remediation: Return generic messages to clients; log full traces server-side only.
+
+  - id: exception.debug-true
+    check: Exception Handling
+    severity: HIGH
+    pattern: "debug\\s*=\\s*True"
+    message: Debug mode enabled in code
+    remediation: Ensure debug=False in production; gate with an env flag.
+
+  # --- Headers / DB / Backup --------------------------------------------------------
+  - id: headers.middleware-missing
+    check: Security Headers
+    severity: MEDIUM
+    inverse: true
+    pattern: "helmet|Content-Security-Policy|X-Frame-Options|secure_headers|Strict-Transport-Security"
+    message: Security-header middleware not found
+    remediation: helmet (Express), custom middleware / proxy headers (FastAPI/Next): HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy.
+
+  - id: db.grant-all
+    check: Database Security
+    severity: MEDIUM
+    pattern: "GRANT ALL"
+    message: GRANT ALL — least privilege violated
+    remediation: Scope privileges per role; the app user must never be a superuser.
+
+  - id: db.tls-missing
+    check: Database Security
+    severity: LOW
+    inverse: true
+    pattern: "sslmode|ssl=true|encrypt=true"
+    message: No TLS config for DB connections
+    remediation: Enable TLS on DB connections (sslmode=require).
+
+  - id: backup.absent
+    check: Backup
+    severity: LOW
+    inverse: true
+    pattern: "pg_dump|mysqldump|backup|snapshot|pg_basebackup"
+    exts: [".sh", ".yml", ".yaml", ".py"]
+    message: Backup strategy not found anywhere in repo
+    remediation: Automate backups (pg_dump cron / wal-g) and test restores regularly.

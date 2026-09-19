@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "security-audit-cli"
+version = "3.0.0"
+description = "Multi-language security audit CLI — YAML rule engine, baseline support, git-diff mode, Markdown/JSON/SARIF reports"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Chad Saglam" }]
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+deps-audit = ["pip-audit>=2.6"]
+dev = ["ruff>=0.6", "mypy>=1.10", "pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/ChadSaglam/security-audit-cli"
+
+[project.scripts]
+security-audit = "security_audit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+security_audit = ["default_rules.yml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
