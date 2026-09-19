@@ -14,16 +14,29 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from . import __version__ as VERSION
-from .engine import (apply_rules, classify, iter_files, load_baseline,
-                     mark_baselined, read, save_baseline, CODE_EXT,
-                     DEFAULT_BASELINE)
-from .model import Report, SEVERITIES
-from .renderers import (Style, render_console, render_json,
+from .config import Config
+from .engine import (CODE_EXT, DEFAULT_BASELINE, apply_rules, classify,
+                     iter_files, load_baseline, mark_baselined, read,
+                     save_baseline)
+from .model import Finding, Report, SEVERITIES
+from .renderers import (Style, render_console, render_html, render_json,
                         render_markdown, render_sarif)
 
 
+def apply_config(rep: Report, root: Path, config: Config) -> None:
+    """Apply project-config overrides to findings (severity + role)."""
+    if not (config.severity_overrides or config.role_overrides):
+        return
+    for f in rep.findings:
+        if f.rule_id in config.severity_overrides:
+            f.severity = config.severity_overrides[f.rule_id]
+        for marker, role in config.role_overrides.items():
+            if marker in f.file:
+                f.role = role
+
+
 # ---------------------------------------------------------------------------
-# Compound checks (require multi-file context or external processes)
+# Compound checks
 # ---------------------------------------------------------------------------
 
 def check_cookie_flags(rep: Report, root: Path) -> None:
@@ -39,8 +52,8 @@ def check_cookie_flags(rep: Report, root: Path) -> None:
             rep.findings.append(_f("compound.cookie-flags",
                 "Secure Cookies", "HIGH", rel, 0,
                 f"Cookie flags missing ({flags}/3 set)",
-                "Set cookies with Secure, HttpOnly and SameSite "
-                "(Lax/Strict).", classify(p)))
+                "Set cookies with Secure, HttpOnly and SameSite (Lax/Strict).",
+                classify(p)))
 
 
 def check_file_upload(rep: Report, root: Path) -> None:
@@ -63,17 +76,7 @@ def check_file_upload(rep: Report, root: Path) -> None:
 
 
 def check_dependencies(rep: Report, root: Path) -> None:
-    """Scan the TARGET project's Python dependencies.
-
-    Never run bare `pip-audit` from the tool's own environment — that audits
-    the tool's site-packages (jupyterlab, keras, yt-dlp, ...) instead of the
-    project under scan. Instead:
-      1. requirements*.txt present        → pip-audit -r <file>
-      2. project-local .venv present      → pip-audit --python <venv/bin/python>
-      3. otherwise                        → INFO "skipped"
-    pip-audit's JSON shape varies by version: a list of dep dicts, or
-    {"dependencies": [...]} — handle both, skip non-dict entries.
-    """
+    """Scan the TARGET project's Python dependencies — never the tool's venv."""
     if not _run_ok(["pip-audit", "--version"]):
         rep.findings.append(_f("compound.dep-python-skip",
             "Dependencies", "INFO", "(env)", 0,
@@ -222,7 +225,6 @@ def check_live_headers(rep: Report, url: str) -> None:
 
 
 def _f(rule_id, check, sev, file, line, msg, remed="", role="production"):
-    from .model import Finding
     return Finding(rule_id, check, sev, file, line, msg, remed, role)
 
 
@@ -242,22 +244,32 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         prog="security-audit",
         description="Project security audit — YAML rule engine, baseline, "
-                    "SARIF reports")
+                    "HTML/SARIF reports")
     ap.add_argument("--path", default=".", help="project root")
     ap.add_argument("--since", metavar="REF",
                     help="scan only files changed since git ref (e.g. main)")
     ap.add_argument("--url", help="live site URL for header checks")
     ap.add_argument("--rules", type=Path, nargs="*", default=[],
                     help="extra YAML rule files")
+    ap.add_argument("--config", type=Path, metavar="FILE",
+                    help="path to .security-audit.toml (default: "
+                         "<path>/.security-audit.toml)")
     ap.add_argument("--baseline", default=DEFAULT_BASELINE,
                     help=f"baseline file (default: {DEFAULT_BASELINE})")
     ap.add_argument("--update-baseline", action="store_true",
                     help="write current findings to the baseline, then exit")
     ap.add_argument("--baseline-reason", default="reviewed",
                     help="reason recorded for accepted findings")
+    ap.add_argument("--accept-production-risk", action="store_true",
+                    help="with --update-baseline: also accept production "
+                         "CRITICAL/HIGH findings (requires conscious choice)")
     ap.add_argument("--json", dest="json_out", help="write JSON report")
     ap.add_argument("--sarif", dest="sarif_out", metavar="FILE",
                     help="write SARIF report (GitHub code scanning)")
+    ap.add_argument("--html", dest="html_out", nargs="?", const="AUTO",
+                    metavar="FILE",
+                    help="also write an interactive HTML report "
+                         "(optional FILE path)")
     ap.add_argument("--no-md", action="store_true",
                     help="skip the Markdown report")
     ap.add_argument("--report-dir", default=".",
@@ -267,7 +279,8 @@ def main() -> int:
                     help="exit non-zero at this severity or worse")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--open", action="store_true",
-                    help="open the Markdown report after the scan (macOS)")
+                    help="open the HTML (or Markdown) report after the scan "
+                         "(macOS)")
     ap.add_argument("--version", action="version",
                     version=f"%(prog)s {VERSION}")
     args = ap.parse_args()
@@ -281,17 +294,21 @@ def main() -> int:
     started = dt.datetime.now()
     t0 = time.monotonic()
 
+    config = Config.load(args.config or root)
+
     rep = Report()
     rules = __import__("security_audit.engine", fromlist=["load_rules"])\
         .load_rules(args.rules)
     apply_rules(rep, root, rules, since_ref=args.since)
-    if not args.since:              # compound checks only on full scan
+    if not args.since:
         check_cookie_flags(rep, root)
         check_file_upload(rep, root)
         check_dependencies(rep, root)
         check_cicd(rep, root)
     if args.url:
         check_live_headers(rep, args.url)
+
+    apply_config(rep, root, config)
 
     baseline = load_baseline(root, args.baseline)
     mark_baselined(rep, baseline)
@@ -303,10 +320,24 @@ def main() -> int:
         "started": started.strftime("%Y-%m-%d %H:%M:%S"),
         "since": args.since or "",
         "rules": len(rules),
+        "config_file": str(args.config or "(default)"),
         "baseline_file": args.baseline if baseline else "",
     }
 
     if args.update_baseline:
+        risky = [f for f in rep.active()
+                 if f.role == "production"
+                 and f.severity in ("CRITICAL", "HIGH")]
+        if risky and not args.accept_production_risk:
+            print(st.red(" Refusing to bulk-accept the following PRODUCTION "
+                         "CRITICAL/HIGH findings:"))
+            for f in risky:
+                print(f"   - {f.check} @ {f.file}:{f.line or '-'} "
+                      f"({f.rule_id})")
+            print(st.yellow(" Fix them first, or re-run with "
+                            "--accept-production-risk to consciously "
+                            "accept them."))
+            return 2
         path = save_baseline(root, rep, args.baseline, args.baseline_reason)
         n = sum(1 for f in rep.findings if not f.baselined)
         print(f"Baseline updated: {path} "
@@ -315,7 +346,6 @@ def main() -> int:
 
     print(render_console(rep, st, VERSION))
 
-    # --- report files ------------------------------------------------------
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = started.strftime("%Y%m%d-%H%M%S")
@@ -325,6 +355,11 @@ def main() -> int:
         md_path = report_dir / f"security-audit-report-{stamp}.md"
         md_path.write_text(render_markdown(rep, VERSION), encoding="utf-8")
         written.append(("Markdown", md_path))
+    if args.html_out:
+        html_path = Path(args.html_out) if args.html_out != "AUTO" else \
+            report_dir / f"security-audit-report-{stamp}.html"
+        html_path.write_text(render_html(rep, VERSION), encoding="utf-8")
+        written.append(("HTML", html_path))
     if args.json_out:
         p = Path(args.json_out)
         p.write_text(json.dumps(render_json(rep, VERSION), indent=2),
@@ -347,7 +382,8 @@ def main() -> int:
     print(st.dim(" " + "=" * 60))
 
     if args.open and written:
-        subprocess.run(["open", str(written[0][1].resolve())], check=False)
+        target = [p for k, p in written if k == "HTML"] or [written[0][1]]
+        subprocess.run(["open", str(target[0].resolve())], check=False)
 
     if args.fail_on == "NEVER":
         return 0

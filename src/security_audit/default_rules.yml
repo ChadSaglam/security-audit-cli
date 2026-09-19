@@ -92,6 +92,13 @@ rules:
     message: Unescaped HTML rendering (innerHTML / {@html} / dangerouslySetInnerHTML)
     remediation: "Sanitize (DOMPurify/bleach). Frameworks escape by default — only inject trusted constant strings (e.g. next-themes bootstrap script)."
 
+  - id: xss.localstorage-token
+    check: XSS
+    severity: HIGH
+    pattern: "localStorage\\.(getItem|setItem)\\(['\"]([\\w.-]*token|[\\w.-]*session|jwt)['\"]"
+    message: Auth token stored in localStorage
+    remediation: "Store tokens in httpOnly cookies (not localStorage) — any injected XSS script can call localStorage.getItem and steal the session. Combined with a missing CSP (rule headers.middleware-missing) this is the classic session-theft chain."
+
   # --- CSRF / CORS ----------------------------------------------------------
   - id: csrf.absent
     check: CSRF
@@ -99,7 +106,7 @@ rules:
     inverse: true
     pattern: "csrf|csurf|SameSite|X-CSRF|xsrf"
     message: CSRF protection (token or SameSite cookie) not found
-    remediation: "Cookie sessions: add CSRF middleware or SameSite=Strict cookies. Pure Bearer-token APIs must document the exception."
+    remediation: "Cookie sessions: add CSRF middleware or SameSite=Strict cookies. Pure Bearer-token APIs (Authorization header) are CSRF-resistant by design — document the exception."
 
   - id: cors.wildcard
     check: CORS
@@ -166,6 +173,91 @@ rules:
     pattern: "postgres(ql)?://[^\\s'\"]+:[^\\s'\"]+@"
     message: DB connection string with credentials
     remediation: "Build the DSN from env vars (pydantic-settings Field(env=...)); a default is still a secret."
+
+  # --- Secrets: provider-specific (v3.1) -------------------------------------
+  - id: secrets.stripe-key
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "(?<![a-zA-Z0-9])(sk|pk)_(live|test)_[0-9a-zA-Z]{20,}"
+    message: Stripe API key in plaintext
+    remediation: "Rotate in the Stripe dashboard immediately; move to env vars."
+
+  - id: secrets.slack-token
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "xox[baprs]-[0-9a-zA-Z-]{10,}"
+    message: Slack token in plaintext
+    remediation: "Revoke at api.slack.com/apps, move to env vars, scrub git history."
+
+  - id: secrets.google-api
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "AIza[0-9A-Za-z\\-_]{35}"
+    message: Google API key in plaintext
+    remediation: "Restrict/revoke the key in Google Cloud Console; move to env vars."
+
+  - id: secrets.twilio
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "(?<![0-9a-fA-F])SK[0-9a-fA-F]{32}"
+    message: Twilio API key in plaintext
+    remediation: "Revoke in Twilio Console; move to env vars."
+
+  - id: secrets.sendgrid
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "SG\\.[0-9A-Za-z\\-_]{22}\\.[0-9A-Za-z\\-_]{43}"
+    message: SendGrid API key in plaintext
+    remediation: "Revoke in SendGrid settings; move to env vars."
+
+  - id: secrets.npm-token
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "npm_[0-9A-Za-z]{36}"
+    message: npm access token in plaintext
+    remediation: "Revoke on npmjs.com; move to env vars / npmrc outside repo."
+
+  - id: secrets.pypi-token
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "pypi-[0-9A-Za-z\\-_]{50,}"
+    message: PyPI API token in plaintext
+    remediation: "Revoke at pypi.org/manage/account; use trusted publishing."
+
+  - id: secrets.docker-pat
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "dckr_pat_[0-9A-Za-z\\-_]{20,}"
+    message: Docker Hub Personal Access Token in plaintext
+    remediation: "Revoke in Docker Hub security settings; move to env vars."
+
+  - id: secrets.discord-token
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "[MN][A-Za-z\\d]{23,}\\.[\\w-]{6}\\.[\\w-]{27}"
+    message: Discord bot token in plaintext
+    remediation: "Reset the token in the Discord Developer Portal; move to env."
+
+  - id: secrets.telegram-bot
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "\\d{8,10}:[0-9A-Za-z\\-_]{35}"
+    message: Telegram bot token in plaintext
+    remediation: "Revoke via @BotFather /revoke; move to env vars."
+
+  - id: secrets.mailgun
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "key-[0-9a-zA-Z]{32}"
+    message: Mailgun API key in plaintext
+    remediation: "Rotate in Mailgun console; move to env vars."
+
+  - id: secrets.heroku
+    check: Secret Management
+    severity: CRITICAL
+    pattern: "(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])"
+    message: UUID-shaped secret (Heroku API key style) in plaintext
+    remediation: "If live, rotate the credential; move to env vars."
 
   # --- Logging ---------------------------------------------------------------
   - id: logging.sensitive-data

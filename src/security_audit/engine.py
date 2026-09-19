@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from .model import Finding, Report
+from .model import Finding, Report, hash_line
 
 SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "__pycache__",
              "dist", "build", ".next", ".next-e2e", ".turbo", ".cache",
@@ -77,10 +77,6 @@ def read(p: Path) -> str:
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Rules
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Rule:
     id: str
@@ -89,7 +85,7 @@ class Rule:
     pattern: str
     message: str
     remediation: str = ""
-    inverse: bool = False            # fire when pattern is ABSENT project-wide
+    inverse: bool = False
     exts: list[str] = field(default_factory=lambda: sorted(CODE_EXT))
     roles: list[str] = field(
         default_factory=lambda: ["production", "test", "tooling"])
@@ -129,8 +125,11 @@ def apply_rules(report: Report, root: Path, rules: list[Rule],
                     found.add(rule.id)
                     if not rule.inverse:
                         report.findings.append(Finding(
-                            rule.id, rule.check, rule.severity, rel, i,
-                            rule.message, rule.remediation, role))
+                            rule_id=rule.id, check=rule.check,
+                            severity=rule.severity, file=rel, line=i,
+                            message=rule.message, remediation=rule.remediation,
+                            role=role,
+                            line_hash=hash_line(line)))
     for rule in rules:
         if rule.inverse and rule.id not in found:
             report.findings.append(Finding(
@@ -138,10 +137,6 @@ def apply_rules(report: Report, root: Path, rules: list[Rule],
                 f"Expected protection not found: {rule.message}",
                 rule.remediation, "production"))
 
-
-# ---------------------------------------------------------------------------
-# Baseline
-# ---------------------------------------------------------------------------
 
 DEFAULT_BASELINE = ".security-audit-baseline.json"
 
@@ -160,7 +155,6 @@ def load_baseline(root: Path, name: str = DEFAULT_BASELINE) -> set[str]:
 def save_baseline(root: Path, report: Report,
                   name: str = DEFAULT_BASELINE,
                   reason: str = "reviewed") -> Path:
-    """Write the currently active findings as accepted baseline."""
     path = root / name
     existing = {}
     if path.exists():
@@ -174,6 +168,7 @@ def save_baseline(root: Path, report: Report,
             existing[f.fingerprint] = {
                 "fingerprint": f.fingerprint, "rule": f.rule_id,
                 "file": f.file, "severity": f.severity,
+                "line_hash": f.line_hash,
                 "reason": reason}
     path.write_text(json.dumps({"accepted": list(existing.values())},
                                indent=2) + "\n", encoding="utf-8")
