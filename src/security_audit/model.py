@@ -7,8 +7,6 @@ from dataclasses import dataclass, field
 
 SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 SEV_WEIGHT = {"CRITICAL": 10, "HIGH": 5, "MEDIUM": 2, "LOW": 1, "INFO": 0}
-
-# Role weights: test findings count 10x less, tooling 5x less.
 ROLE_WEIGHT = {"production": 1.0, "test": 0.1, "tooling": 0.2}
 
 
@@ -21,14 +19,20 @@ class Finding:
     line: int
     message: str
     remediation: str = ""
-    role: str = "production"          # production | test | tooling
+    role: str = "production"
     baselined: bool = False
+    line_hash: str = ""               # sha256(line.strip())[:12] of the matching line
 
     @property
     def fingerprint(self) -> str:
-        """Stable identity for baseline matching (rule + normalized file)."""
-        raw = f"{self.rule_id}:{self.file}"
+        """Content-based identity: stable under refactoring."""
+        raw = f"{self.rule_id}|{self.file}|{self.line_hash}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def hash_line(text: str) -> str:
+    """Normalized hash of a source line for fingerprinting."""
+    return hashlib.sha256(text.strip().encode()).hexdigest()[:12]
 
 
 @dataclass
@@ -37,7 +41,6 @@ class Report:
     stats: dict = field(default_factory=dict)
 
     def active(self) -> list[Finding]:
-        """Findings not accepted in the baseline."""
         return [f for f in self.findings if not f.baselined]
 
     def counts(self, active_only: bool = False) -> dict[str, int]:

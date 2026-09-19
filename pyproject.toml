@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "security-audit-cli"
-version = "3.0.3"
-description = "Multi-language security audit CLI — YAML rule engine, baseline support, git-diff mode, Markdown/JSON/SARIF reports"
+version = "3.1.0"
+description = "Multi-language security audit CLI — YAML rule engine, content-based baseline, HTML reports"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Chad Saglam" }]
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0", "tomli>=2.0; python_version<'3.11'"]
 
 [project.optional-dependencies]
 deps-audit = ["pip-audit>=2.6"]
