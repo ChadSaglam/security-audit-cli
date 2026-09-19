@@ -21,6 +21,7 @@ from .model import Report, SEVERITIES
 from .renderers import (Style, render_console, render_json,
                         render_markdown, render_sarif)
 
+
 # ---------------------------------------------------------------------------
 # Compound checks (require multi-file context or external processes)
 # ---------------------------------------------------------------------------
@@ -62,12 +63,21 @@ def check_file_upload(rep: Report, root: Path) -> None:
 
 
 def check_dependencies(rep: Report, root: Path) -> None:
+    """Pip-audit + bun/npm audit. pip-audit's JSON format is version-dependent;
+    handle both list-of-deps and {'dependencies': [...]} shapes."""
     if _run_ok(["pip-audit", "--version"]):
         audit = subprocess.run(["pip-audit", "--format=json"],
                                capture_output=True, text=True, cwd=root)
         try:
-            for dep in json.loads(audit.stdout or "[]"):
+            data = json.loads(audit.stdout or "[]")
+            deps = (data.get("dependencies", []) if isinstance(data, dict)
+                    else data)
+            for dep in deps:
+                if not isinstance(dep, dict):
+                    continue
                 for v in dep.get("vulns", []):
+                    if not isinstance(v, dict):
+                        continue
                     rep.findings.append(_f("compound.dep-python",
                         "Dependencies", "HIGH", "requirements", 0,
                         f"{dep['name']} {dep['version']}: {v.get('id')}",
@@ -158,7 +168,7 @@ def check_live_headers(rep: Report, url: str) -> None:
             headers = {k.lower(): v for k, v in resp.headers.items()}
     except URLError as e:
         rep.findings.append(_f("live.connect", "Security Headers (live)",
-            "INFO", url, 0, f"Could not connect: {e}"))
+                               "INFO", url, 0, f"Could not connect: {e}"))
         return
     for h, sev in REQUIRED_HEADERS.items():
         if h not in headers:
@@ -243,7 +253,7 @@ def main() -> int:
     rules = __import__("security_audit.engine", fromlist=["load_rules"])\
         .load_rules(args.rules)
     apply_rules(rep, root, rules, since_ref=args.since)
-    if not args.since:              # compound checks only make sense on a full scan
+    if not args.since:              # compound checks only on full scan
         check_cookie_flags(rep, root)
         check_file_upload(rep, root)
         check_dependencies(rep, root)
@@ -307,7 +317,6 @@ def main() -> int:
     if args.open and written:
         subprocess.run(["open", str(written[0][1].resolve())], check=False)
 
-    # --- exit code (considers ACTIVE findings only, including baselined) ---
     if args.fail_on == "NEVER":
         return 0
     active_sevs = [f.severity for f in rep.active()]
