@@ -258,6 +258,9 @@ def main() -> int:
                     help=f"baseline file (default: {DEFAULT_BASELINE})")
     ap.add_argument("--update-baseline", action="store_true",
                     help="write current findings to the baseline, then exit")
+    ap.add_argument("--only", metavar="ROLES",
+                    help="with --update-baseline: only accept these roles, "
+                         "comma-separated (e.g. test,tooling)")
     ap.add_argument("--baseline-reason", default="reviewed",
                     help="reason recorded for accepted findings")
     ap.add_argument("--accept-production-risk", action="store_true",
@@ -325,10 +328,13 @@ def main() -> int:
     }
 
     if args.update_baseline:
+        only_roles = ({r.strip() for r in args.only.split(",")}
+                      if args.only else None)
         risky = [f for f in rep.active()
                  if f.role == "production"
                  and f.severity in ("CRITICAL", "HIGH")]
-        if risky and not args.accept_production_risk:
+        if risky and not args.accept_production_risk \
+                and (only_roles is None or "production" in only_roles):
             print(st.red(" Refusing to bulk-accept the following PRODUCTION "
                          "CRITICAL/HIGH findings:"))
             for f in risky:
@@ -338,10 +344,12 @@ def main() -> int:
                             "--accept-production-risk to consciously "
                             "accept them."))
             return 2
-        path = save_baseline(root, rep, args.baseline, args.baseline_reason)
+        path = save_baseline(root, rep, args.baseline, args.baseline_reason,
+                             only_roles=only_roles)
         n = sum(1 for f in rep.findings if not f.baselined)
+        scope = f" roles: {','.join(sorted(only_roles))}" if only_roles else ""
         print(f"Baseline updated: {path} "
-              f"(+{n} newly accepted finding(s))")
+              f"(+{n} newly accepted finding(s)){scope}")
         return 0
 
     print(render_console(rep, st, VERSION))
