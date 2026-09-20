@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "security-audit-cli"
-version = "3.1.0"
+version = "3.1.1"
 description = "Multi-language security audit CLI — YAML rule engine, content-based baseline, HTML reports"
 readme = "README.md"
 requires-python = ">=3.10"

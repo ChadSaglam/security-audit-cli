@@ -111,6 +111,7 @@ def load_rules(extra_paths: list[Path] | None = None) -> list[Rule]:
 def apply_rules(report: Report, root: Path, rules: list[Rule],
                 since_ref: str | None = None) -> None:
     found: set[str] = set()
+    seen_content: dict[tuple[str, str, str], int] = {}  # (rule, file, hash) → count
     for p, rel in iter_files(root, since_ref):
         if p.suffix not in CODE_EXT:
             continue
@@ -123,13 +124,18 @@ def apply_rules(report: Report, root: Path, rules: list[Rule],
             for i, line in enumerate(lines, 1):
                 if rx.search(line):
                     found.add(rule.id)
-                    if not rule.inverse:
-                        report.findings.append(Finding(
-                            rule_id=rule.id, check=rule.check,
-                            severity=rule.severity, file=rel, line=i,
-                            message=rule.message, remediation=rule.remediation,
-                            role=role,
-                            line_hash=hash_line(line)))
+                    if rule.inverse:
+                        continue
+                    lh = hash_line(line)
+                    key = (rule.id, rel, lh)
+                    seen_content[key] = seen_content.get(key, 0) + 1
+                    report.findings.append(Finding(
+                        rule_id=rule.id, check=rule.check,
+                        severity=rule.severity, file=rel, line=i,
+                        message=rule.message, remediation=rule.remediation,
+                        role=role,
+                        line_hash=lh,
+                        occurrence=seen_content[key]))
     for rule in rules:
         if rule.inverse and rule.id not in found:
             report.findings.append(Finding(
@@ -154,7 +160,10 @@ def load_baseline(root: Path, name: str = DEFAULT_BASELINE) -> set[str]:
 
 def save_baseline(root: Path, report: Report,
                   name: str = DEFAULT_BASELINE,
-                  reason: str = "reviewed") -> Path:
+                  reason: str = "reviewed",
+                  only_roles: set[str] | None = None) -> Path:
+    """Write active findings to the baseline. If only_roles is set, only
+    findings whose role is in that set are accepted (the rest stay active)."""
     path = root / name
     existing = {}
     if path.exists():
@@ -164,12 +173,15 @@ def save_baseline(root: Path, report: Report,
         except (json.JSONDecodeError, KeyError):
             pass
     for f in report.findings:
-        if not f.baselined:
-            existing[f.fingerprint] = {
-                "fingerprint": f.fingerprint, "rule": f.rule_id,
-                "file": f.file, "severity": f.severity,
-                "line_hash": f.line_hash,
-                "reason": reason}
+        if f.baselined:
+            continue
+        if only_roles is not None and f.role not in only_roles:
+            continue
+        existing[f.fingerprint] = {
+            "fingerprint": f.fingerprint, "rule": f.rule_id,
+            "file": f.file, "severity": f.severity,
+            "line_hash": f.line_hash, "occurrence": f.occurrence,
+            "reason": reason}
     path.write_text(json.dumps({"accepted": list(existing.values())},
                                indent=2) + "\n", encoding="utf-8")
     return path

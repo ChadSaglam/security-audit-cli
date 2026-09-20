@@ -22,11 +22,17 @@ class Finding:
     role: str = "production"
     baselined: bool = False
     line_hash: str = ""               # sha256(line.strip())[:12] of the matching line
+    occurrence: int = 1               # nth identical (rule, file, line) occurrence
 
     @property
     def fingerprint(self) -> str:
-        """Content-based identity: stable under refactoring."""
-        raw = f"{self.rule_id}|{self.file}|{self.line_hash}"
+        """Content-based identity: stable under refactoring.
+
+        Includes an occurrence counter so two identical lines in the same
+        file still get distinct fingerprints (avoids the email_sender.py
+        collision from v3.1.0 where identical log lines merged).
+        """
+        raw = f"{self.rule_id}|{self.file}|{self.line_hash}|{self.occurrence}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
