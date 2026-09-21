@@ -18,6 +18,7 @@ from .config import Config
 from .engine import (CODE_EXT, DEFAULT_BASELINE, apply_rules, classify,
                      iter_files, load_baseline, mark_baselined, read,
                      save_baseline)
+from .engines import ENGINES, dedupe
 from .model import Finding, Report, SEVERITIES
 from .renderers import (Style, render_console, render_html, render_json,
                         render_markdown, render_sarif)
@@ -44,7 +45,7 @@ def check_cookie_flags(rep: Report, root: Path) -> None:
         if p.suffix not in CODE_EXT:
             continue
         content = read(p)
-        if not re.search(r"set_cookie|Set-Cookie|res\.cookie", content, re.I):
+        if not re.search(r"set_cookie|Set-Cookie|res\\.cookie", content, re.I):
             continue
         flags = sum(1 for fl in ("Secure", "HttpOnly", "SameSite")
                     if re.search(fl, content, re.I))
@@ -57,9 +58,9 @@ def check_cookie_flags(rep: Report, root: Path) -> None:
 
 
 def check_file_upload(rep: Report, root: Path) -> None:
-    upload = re.compile(r"(multipart|FileStorage|request\.files|formData)", re.I)
+    upload = re.compile(r"(multipart|FileStorage|request\\.files|formData)", re.I)
     valid = re.compile(r"(ALLOWED_EXTENSIONS|allowed_extensions|magic|"
-                       r"file-type|imghdr|content_type.*in\s|\.endswith\()")
+                       r"file-type|imghdr|content_type.*in\\s|\\.endswith\\()")
     has_up = has_val = False
     for p, _ in iter_files(root):
         c = read(p)
@@ -243,9 +244,13 @@ def _run_ok(cmd: list[str]) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="security-audit",
-        description="Project security audit — YAML rule engine, baseline, "
+        description="Project security audit — multi-engine, baseline, "
                     "HTML/SARIF reports")
     ap.add_argument("--path", default=".", help="project root")
+    ap.add_argument("--engine", default="auto",
+                    choices=["auto", "regex", "gitleaks"],
+                    help="scan engine: auto (regex + all available external "
+                         "engines), regex only, or a single external engine")
     ap.add_argument("--since", metavar="REF",
                     help="scan only files changed since git ref (e.g. main)")
     ap.add_argument("--url", help="live site URL for header checks")
@@ -300,9 +305,28 @@ def main() -> int:
     config = Config.load(args.config or root)
 
     rep = Report()
-    rules = __import__("security_audit.engine", fromlist=["load_rules"])\
-        .load_rules(args.rules)
-    apply_rules(rep, root, rules, since_ref=args.since)
+    engine_health: dict[str, str] = {}
+
+    # --- regex engine (our YAML rule engine) --------------------------------
+    if args.engine in ("auto", "regex"):
+        rules = __import__("security_audit.engine",
+                           fromlist=["load_rules"]).load_rules(args.rules)
+        apply_rules(rep, root, rules, since_ref=args.since)
+        engine_health["regex"] = "ran"
+    else:
+        engine_health["regex"] = "skipped: --engine gitleaks"
+
+    # --- external engines ----------------------------------------------------
+    for name, runner in ENGINES.items():
+        if args.engine not in ("auto", name):
+            engine_health[name] = "skipped: --engine selection"
+            continue
+        findings, status = runner(root)
+        engine_health[name] = status
+        if findings:
+            rep.findings.extend(dedupe(rep.findings, findings))
+
+    # --- compound checks (only make sense on a full scan) --------------------
     if not args.since:
         check_cookie_flags(rep, root)
         check_file_upload(rep, root)
@@ -322,7 +346,8 @@ def main() -> int:
         "seconds": round(time.monotonic() - t0, 1),
         "started": started.strftime("%Y-%m-%d %H:%M:%S"),
         "since": args.since or "",
-        "rules": len(rules),
+        "rules": len(rules) if args.engine in ("auto", "regex") else 0,
+        "engines": engine_health,
         "config_file": str(args.config or "(default)"),
         "baseline_file": args.baseline if baseline else "",
     }
@@ -353,6 +378,12 @@ def main() -> int:
         return 0
 
     print(render_console(rep, st, VERSION))
+    if engine_health:
+        print()
+        print(st.bold(" Engine health"))
+        for name, status in engine_health.items():
+            icon = st.green("✓") if status == "ran" else st.yellow("-")
+            print(f"   {icon} {name:<10} {status}")
 
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)

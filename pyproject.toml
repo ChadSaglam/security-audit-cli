@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "security-audit-cli"
-version = "4.0.0a1"
+version = "4.0.0a2"
 description = "Multi-engine security audit CLI — YAML rule engine + gitleaks orchestration, baseline, HTML reports"
 readme = "README.md"
 requires-python = ">=3.10"
